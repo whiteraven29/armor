@@ -10,10 +10,10 @@ A personal arsenal of security tools built by **wh1t3r4v3n** for CTF, penetratio
 
 ## Tools
 
-| Tool | Description | Language |
-|------|-------------|----------|
-| [urlx](urlx/) | Advanced URL encoder/decoder + live URL toolkit (WAF-bypass sweep, threaded fuzzer, baseline diff) | Python |
-| [raveye](raveye/) | A tool for tracking enumeration process and help to keep tracks of enumeration for all services discovered so you don't miss a point| Python |
+| Tool              | Description                                                                                                                          | Language |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------- |
+| [urlx](urlx/)     | Advanced URL encoder/decoder + live URL toolkit (WAF-bypass sweep, threaded fuzzer, baseline diff)                                   | Python   |
+| [raveye](raveye/) | A tool for tracking enumeration process and help to keep tracks of enumeration for all services discovered so you don't miss a point | Python   |
 
 _More tools land here over time — each in its own folder with its own README._
 
@@ -32,6 +32,10 @@ armor/
 ```
 
 Each tool is self-contained. Prefer standard-library / zero-dependency where possible; when a tool needs packages, it ships a `requirements.txt` inside its own folder.
+
+## Contributing
+
+- See [contributing.md](./CONTRIBUTING.md)
 
 ## Usage
 

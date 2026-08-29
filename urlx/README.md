@@ -26,7 +26,8 @@ A single, dependency-free Python 3 CLI that does the whole payload loop — **en
 No dependencies — just Python 3.7+.
 
 ```bash
-git clone https://github.com/whiteraven29/urlx
+git clone https://github.com/whiteraven29/armor
+cd armor/urlx
 chmod +x urlx.py
 ./urlx.py --help
 ```
@@ -49,20 +50,20 @@ echo "x" | urlx --stdin --mixed --seed 7  # reproducible random encoding
 urlx "%2561%2562" -d --recursive          # fully unwrap    -> ab
 ```
 
-| Flag | Meaning |
-|---|---|
-| `-e` | standard percent-encode |
-| `--plus` | form encoding (space → `+`) |
-| `--hex-only` | encode every byte |
-| `--symbols-only` | encode all but `[A-Za-z0-9]` |
-| `--encode-chars STR` | encode only these chars |
-| `--mixed [--seed N]` | randomly encode ~half (reproducible) |
-| `--unicode` | `%uXXXX` (IIS/legacy) |
-| `--double` / `--triple` / `--rounds N` | repeat encoding |
-| `--double-pct` | `%25XX` |
-| `--lower` | lowercase hex |
-| `--burp {url,form,aggressive,minimal,double,path}` | Burp-style profile |
-| `-d [--recursive] [--rounds N]` | decode |
+| Flag                                               | Meaning                              |
+| -------------------------------------------------- | ------------------------------------ |
+| `-e`                                               | standard percent-encode              |
+| `--plus`                                           | form encoding (space → `+`)          |
+| `--hex-only`                                       | encode every byte                    |
+| `--symbols-only`                                   | encode all but `[A-Za-z0-9]`         |
+| `--encode-chars STR`                               | encode only these chars              |
+| `--mixed [--seed N]`                               | randomly encode ~half (reproducible) |
+| `--unicode`                                        | `%uXXXX` (IIS/legacy)                |
+| `--double` / `--triple` / `--rounds N`             | repeat encoding                      |
+| `--double-pct`                                     | `%25XX`                              |
+| `--lower`                                          | lowercase hex                        |
+| `--burp {url,form,aggressive,minimal,double,path}` | Burp-style profile                   |
+| `-d [--recursive] [--rounds N]`                    | decode                               |
 
 ## URL Utilities
 
@@ -121,18 +122,18 @@ urlx --send "https://t/?x=FUZZ" --wordlist xss.txt --reflect-only --json | jq .
 urlx --send "https://t/?q=FUZZ" --wordlist sqli.txt --encode-payloads --hex-only --fc 404
 ```
 
-| Flag | Meaning |
-|---|---|
-| `--wordlist FILE` | each line replaces `FUZZ` |
-| `--threads N` | concurrency (default 12) |
-| `--delay SEC` | per-request delay / rate-limit |
-| `--auto-calibrate` | learn junk baseline, auto-filter it |
-| `--mc / --fc` | match / filter status codes |
-| `--ms / --fs` | match / filter response sizes |
-| `--mr / --fr` | match / filter body regex |
-| `--reflect-only` | only reflected payloads |
-| `--encode-payloads` | apply chosen encoder to each entry |
-| `--json` | JSON lines output (pipe to `jq`) |
+| Flag                | Meaning                             |
+| ------------------- | ----------------------------------- |
+| `--wordlist FILE`   | each line replaces `FUZZ`           |
+| `--threads N`       | concurrency (default 12)            |
+| `--delay SEC`       | per-request delay / rate-limit      |
+| `--auto-calibrate`  | learn junk baseline, auto-filter it |
+| `--mc / --fc`       | match / filter status codes         |
+| `--ms / --fs`       | match / filter response sizes       |
+| `--mr / --fr`       | match / filter body regex           |
+| `--reflect-only`    | only reflected payloads             |
+| `--encode-payloads` | apply chosen encoder to each entry  |
+| `--json`            | JSON lines output (pipe to `jq`)    |
 
 ## Baseline-vs-Payload Diff
 
@@ -159,15 +160,15 @@ Use `--baseline VALUE` to set an explicit baseline instead of a random token.
 
 ## Why urlx vs. the field
 
-| Capability | urlx | ffuf/wfuzz | CyberChef | Burp |
-|---|---|---|---|---|
-| Encode/decode + WAF variants | ✅ | partial | ✅ | ✅ |
-| Threaded wordlist fuzz | ✅ | ✅ | ❌ | ✅ (Intruder) |
-| **Auto encoding-sweep bypass** | ✅ | ❌ | ❌ | ❌ |
-| **Auto-calibrate FP filter** | ✅ | ❌ | ❌ | ❌ |
-| **Baseline diff w/ time signal** | ✅ | ❌ | ❌ | partial |
-| Defang/refang for reports | ✅ | ❌ | ✅ | ❌ |
-| Stdlib-only, zero install | ✅ | ❌ | ❌ | ❌ |
+| Capability                       | urlx | ffuf/wfuzz | CyberChef | Burp         |
+| -------------------------------- | ---- | ---------- | --------- | ------------ |
+| Encode/decode + WAF variants     | ✅    | partial    | ✅         | ✅            |
+| Threaded wordlist fuzz           | ✅    | ✅          | ❌         | ✅ (Intruder) |
+| **Auto encoding-sweep bypass**   | ✅    | ❌          | ❌         | ❌            |
+| **Auto-calibrate FP filter**     | ✅    | ❌          | ❌         | ❌            |
+| **Baseline diff w/ time signal** | ✅    | ❌          | ❌         | partial      |
+| Defang/refang for reports        | ✅    | ❌          | ✅         | ❌            |
+| Stdlib-only, zero install        | ✅    | ❌          | ❌         | ❌            |
 
 urlx's niche is the **encode-and-send-and-report loop in one pipeable CLI**. For million-line wordlists at max throughput, ffuf's Go engine is still faster — urlx's edge is encoding intelligence, not raw speed.
 
