@@ -26,3 +26,4 @@ scope.txt
 targets.txt
 *.local
 .env
+target1.md
