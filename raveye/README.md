@@ -1,9 +1,19 @@
 # ctfenum — enumeration lab notebook
 
 A single-file CLI that turns CTF / offensive enumeration into a **target-centric
-lab notebook**: it tracks the checklist per service, *executes and captures* the
-commands you choose to run, records loot and credentials with provenance, and
-exports a report-ready Markdown bundle when you're done.
+lab notebook**: it tracks the checklist, *executes and captures* the commands you
+choose to run, records loot and credentials with provenance, and exports a
+report-ready Markdown bundle when you're done.
+
+Two workflows share one notebook:
+
+- **Service enum** (`enum add` / `enum import` → `enum next`) — record open
+  ports and pull the follow-up checklist for each service.
+- **Web enum** (`enum web add` → `enum web next`) — register a URL and load the
+  **OWASP Top 10 (2021)** as a per-app checklist, grouped by category.
+
+Both feed the same store, so `run` / `done` / `skip` / `loot` / `cred` / `note`
+/ `export` work on either kind of check.
 
 Still no black box: `enum run` prompts before every command and defaults to
 dry-run, so you stay in control and actually learn the methodology.
@@ -20,7 +30,7 @@ State lives under `~/.enumhelper/`:
 
 ```
 ~/.enumhelper/
-├── 10.10.10.5.json          # meta + services + checks (with run history) + loot + creds + notes
+├── 10.10.10.5.json          # meta + services + webapps + checks (run history) + loot + creds + notes
 ├── 10.10.10.5_loot/         # artifacts from `enum run` and `enum loot`
 ├── playbooks.json           # your check overrides (re-read every invocation)
 └── templates/               # (reserved for custom export templates)
@@ -29,7 +39,7 @@ State lives under `~/.enumhelper/`:
 Old flat-schema files (the `done: true/false` format) are migrated
 automatically the first time you touch them — nothing to convert by hand.
 
-## Workflow
+## Service workflow
 
 ```bash
 # 1. Recon — record ports one at a time, or bulk-import a scan.
@@ -65,10 +75,65 @@ ctfenum export 10.10.10.5 -o report.md -t full       # full | exec-summary | loo
 Fuzzy matching works on check names, so `done null-session` resolves to
 `smb/445:null-session` when it's unambiguous.
 
+## Web workflow (OWASP Top 10)
+
+Found a web app? Register the URL and get the OWASP Top 10 (2021) as a checklist.
+Web checks live under their own `enum web` verbs, but execute and report through
+the same shared machinery.
+
+```bash
+# 1. Register a URL — loads a recon baseline + all OWASP categories (A01–A10).
+ctfenum web add 10.10.10.5 http://10.10.10.5:8080/
+ctfenum web add 10.10.10.5 https://shop.box.tld/ --vhost shop.box.tld --note storefront
+ctfenum web add 10.10.10.5 http://10.10.10.5/ --only A01,A03,A05   # subset (recon always loads)
+
+# 2. Triage — pending web checks, grouped by OWASP category.
+ctfenum web next 10.10.10.5                 # everything pending
+ctfenum web next 10.10.10.5 --cat A03       # just Injection
+ctfenum web next 10.10.10.5 --quick         # only the fast checks
+
+# 3. Execute / mark off — the SHARED verbs, resolved by fuzzy check name.
+ENUM_LIVE=1 ctfenum run  10.10.10.5 a01-verb-tampering
+ctfenum done 10.10.10.5 a03-sqli
+ctfenum loot 10.10.10.5 dump.txt -t sqli -c a03-sqli
+ctfenum skip 10.10.10.5 a06-cms-scan -r "not a CMS"
+
+# Housekeeping.
+ctfenum web list 10.10.10.5                 # registered apps + progress
+ctfenum web checklist                       # print the OWASP reference (no target)
+```
+
+Each app is scoped by host, so multiple vhosts/ports on one target coexist. Many
+web checks are **manual** (IDOR, SSTI, business-logic, SSRF, JWT, deserialization)
+— do the check, then `enum done`; the runnable ones ship templates for `whatweb`,
+`ffuf`, `feroxbuster`, `sqlmap`, `nikto`, `wpscan`, `testssl.sh`, `wafw00f`,
+`hydra`, and CORS / exposed-file `curl` probes.
+
+`{url}` (→ `scheme://host[:port]`) and `{host}` are substituted alongside the
+usual `{ip}` / `{port}` / `{user}` / `{pass}` when a web command is rendered.
+
+> The two sections stay separate: `enum next` shows **service** checks only, and
+> `enum web next` shows **web** checks only — but `enum status` and `enum export`
+> count and render both.
+
+> ⚠️ The runnable templates (`sqlmap`, `hydra`, `feroxbuster`, `nikto`, …) are
+> active and, in some cases, aggressive. They still pass through the dry-run gate
+> — only run them against targets you're authorized to test.
+
+The OWASP categories, each with concrete enumeration checks:
+
+| | category | | category |
+|---|---|---|---|
+| **A01** | Broken Access Control | **A06** | Vulnerable & Outdated Components |
+| **A02** | Cryptographic Failures | **A07** | Identification & Auth Failures |
+| **A03** | Injection | **A08** | Software & Data Integrity Failures |
+| **A04** | Insecure Design | **A09** | Security Logging & Monitoring Failures |
+| **A05** | Security Misconfiguration | **A10** | Server-Side Request Forgery (SSRF) |
+
 ## The execution engine (`enum run`)
 
-1. **Renders** the command, substituting `{ip}`, `{port}`, and `{user}`/`{pass}`
-   pulled from your stashed creds.
+1. **Renders** the command, substituting `{ip}`, `{port}`, `{url}`/`{host}` (for
+   web checks), and `{user}`/`{pass}` pulled from your stashed creds.
 2. **Prompts** you: `Execute: … ? [Y/n/edit]` (skip with `-y`).
 3. **Runs** it and captures stdout / stderr / exit code into an append-only run
    history (you can re-run the same check with different wordlists).
@@ -89,9 +154,10 @@ Fuzzy matching works on check names, so `done null-session` resolves to
 ## Report templates (`enum export -t`)
 
 - **full** — the lab notebook: exec summary, per-service sections (command +
-  latest output, collapsed with `<details>` when long), linked loot and notes,
-  an evidence index with SHA-256 hashes and provenance, a credential table, and
-  a global-checks appendix.
+  latest output, collapsed with `<details>` when long), a **web application
+  testing** section grouped by OWASP category, linked loot and notes, an evidence
+  index with SHA-256 hashes and provenance, a credential table, and a
+  global-checks appendix.
 - **exec-summary** — write-up friendly: collapses all output, hides skipped
   checks and empty services, surfaces only *done* + loot-producing actions.
 - **loot-only** — just the evidence index and cred table, for handing a box off
@@ -138,6 +204,10 @@ ctfenum playbook reload    # validate + list what your overrides add
 Services with built-in playbooks: ftp, ssh, telnet, http, https, smb, rpc, ldap,
 dns, mysql, mssql, postgresql, smtp, pop3, imap, snmp, redis, nfs, rdp, vnc,
 winrm, kerberos, mongodb, oracle, rsync, elasticsearch.
+
+The **web** checklist lives in `WEB_RECON` (discovery baseline) and `WEB_PLAYBOOK`
+(one list per OWASP category) — same tuple shape, so extend them the same way
+when a box teaches you a web check worth keeping.
 
 ## Where this fits vs. other tools
 

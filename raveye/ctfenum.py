@@ -14,12 +14,21 @@ across sessions. Artifacts land in ~/.enumhelper/<target>_loot/. Nothing is
 scanned automatically and nothing runs without your say-so — `enum run` prompts
 before every command and defaults to dry-run unless ENUM_LIVE=1.
 
+Two workflows share one notebook:
+    * SERVICE ENUM — `enum add` / `enum import` record open ports and load a
+      per-service playbook (scope "<svc>/<port>").
+    * WEB ENUM     — `enum web add <url>` loads the OWASP Top 10 (2021) as a
+      checklist for a web app (scope "web/<host>"). See `enum web checklist`.
+Both feed the same store, so run / done / skip / loot / export work on either.
+
 Data model (one JSON per target):
     meta     : {target, created, os_hint, tags[]}
     services : [{port, service, note, added}]
+    webapps  : [{url, host, scheme, port, vhost, scope, note, added}]
     checks   : {"<scope>:<name>": {desc, cmd, state, priority, requires[], runs[]}}
                state ∈ pending | running | done | failed | skipped
                runs is an append-only history: [{t, cmd, exit, stdout, stderr, artifact}]
+               web checks also carry {owasp, url, host} for {url}/{host} rendering
     loot     : [{t, path, sha256, tag, check, note}]     # provenance -> check
     creds    : [{t, user, pass, context, check}]         # structured
     notes    : [{t, text, check, scope}]
@@ -37,6 +46,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 STATE_DIR = Path.home() / ".enumhelper"
 PLAYBOOK_FILE = STATE_DIR / "playbooks.json"
@@ -206,6 +216,125 @@ NMAP_SERVICE_MAP = {
     "imaps": "imap", "pop3s": "pop3", "smtps": "smtp",
 }
 
+# ---------------------------------------------------------------------------
+# WEB ENUM — OWASP Top 10 (2021) driven checklist.
+#
+# `enum web add <target> <url>` loads these as checks under scope "web/<host>",
+# named "<cat>-<slug>" (e.g. a03-sqli) so they group by OWASP category. Many are
+# manual (cmd = None): do the check, then `enum done <target> <slug>`. Extend
+# freely — same tuple shape as the service PLAYBOOKS above.
+# Substitutions: {url} (scheme://host[:port]), {host}, {ip}, {port}, {user}, {pass}.
+# ---------------------------------------------------------------------------
+OWASP_TOP_TEN = {
+    "A01": "Broken Access Control",
+    "A02": "Cryptographic Failures",
+    "A03": "Injection",
+    "A04": "Insecure Design",
+    "A05": "Security Misconfiguration",
+    "A06": "Vulnerable & Outdated Components",
+    "A07": "Identification & Authentication Failures",
+    "A08": "Software & Data Integrity Failures",
+    "A09": "Security Logging & Monitoring Failures",
+    "A10": "Server-Side Request Forgery (SSRF)",
+}
+
+# Discovery baseline — map the app before hunting OWASP categories.
+WEB_RECON = [
+    ("fingerprint", "Fingerprint stack / framework / CMS / versions", "whatweb -a3 {url}", "quick"),
+    ("headers", "Response headers, cookies, redirect chain", "curl -sSIL {url}", "quick"),
+    ("tls", "TLS protocols / ciphers / cert names (if https)", "sslscan {host}:{port}", "quick"),
+    ("robots", "robots.txt & sitemap.xml for hidden paths", "curl -s {url}/robots.txt {url}/sitemap.xml", "quick"),
+    ("map", "Spider the app: pages, inputs, params, roles, auth flows", None, "normal"),
+    ("content-discovery", "Brute-force dirs & files", "feroxbuster -u {url} -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -x php,txt,html,bak", "slow"),
+    ("vhost-fuzz", "Virtual host / subdomain fuzzing (Host header)", "ffuf -u {url}/ -H 'Host: FUZZ.{host}' -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt -fs 0", "slow"),
+    ("param-discovery", "Discover hidden GET/POST parameters", "ffuf -u '{url}/?FUZZ=1' -w /usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt -fs 0", "slow"),
+    ("js-endpoints", "Review JS for endpoints / API keys / secrets", None, "normal"),
+]
+
+WEB_PLAYBOOK = {
+    "A01": [  # Broken Access Control
+        ("idor", "IDOR: increment/replace object refs (id, uuid, user, doc)", None, "normal"),
+        ("forced-browse", "Force-browse admin/internal paths unauthenticated", "ffuf -u {url}/FUZZ -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -mc 200,301,302,403", "normal"),
+        ("verb-tampering", "HTTP method tampering (PUT/DELETE, X-HTTP-Method-Override)", "curl -sSi -X OPTIONS {url}", "quick"),
+        ("path-traversal", "Directory traversal on file params (?file=../../etc/passwd)", None, "normal"),
+        ("priv-esc", "Access-control matrix: low-priv user hitting high-priv funcs", None, "normal", ["creds"]),
+        ("jwt-claims", "Tamper role/scope claims in JWT/cookies (client-side trust)", None, "normal", ["creds"]),
+    ],
+    "A02": [  # Cryptographic Failures
+        ("weak-tls", "Weak TLS versions / ciphers / expired or wrong-CN cert", "testssl.sh {url}", "normal"),
+        ("cleartext", "Sensitive data over HTTP; Secure/HttpOnly/SameSite cookie flags", "curl -sSI {url}", "quick"),
+        ("secrets-exposed", "Secrets in URLs, JS, source, comments, or cached responses", None, "normal"),
+        ("weak-tokens", "Predictable session IDs / reset tokens; JWT alg=none or weak key", None, "normal"),
+    ],
+    "A03": [  # Injection
+        ("sqli", "SQL injection in params / forms / headers", "sqlmap -u '{url}/?id=1' --batch --level 2 --risk 2", "slow"),
+        ("xss", "Reflected / stored / DOM XSS in every input & header", None, "normal"),
+        ("cmdi", "OS command injection in params that reach the shell", None, "normal"),
+        ("ssti", "Server-side template injection ({{7*7}}, ${7*7}, <%= 7*7 %>)", None, "normal"),
+        ("nosqli", "NoSQL injection (login bypass, [$ne], [$gt])", None, "normal"),
+        ("lfi-rfi", "Local/remote file inclusion, wrappers, log poisoning", None, "normal"),
+        ("other-inj", "LDAP / XPath / header / CRLF / ORM injection where relevant", None, "normal"),
+    ],
+    "A04": [  # Insecure Design
+        ("business-logic", "Abuse logic: negative qty, price tampering, coupon reuse", None, "normal"),
+        ("workflow-bypass", "Skip steps in multi-stage flows (checkout, register, 2FA)", None, "normal"),
+        ("race-condition", "Race conditions on balance / limits / one-time tokens", None, "normal"),
+        ("rate-limit", "Missing rate limiting on auth / OTP / costly endpoints", None, "normal"),
+    ],
+    "A05": [  # Security Misconfiguration
+        ("exposed-files", "VCS/backup/config leaks (.git, .env, .bak, .DS_Store, ~)", "curl -s -o /dev/null -w '%{http_code} %{url_effective}\\n' {url}/.git/HEAD {url}/.env {url}/.DS_Store", "quick"),
+        ("dir-listing", "Directory listing / autoindex enabled", None, "quick"),
+        ("verbose-errors", "Stack traces, debug consoles, verbose error pages", None, "normal"),
+        ("missing-headers", "Missing hardening headers (CSP, HSTS, X-Frame-Options)", "curl -sSI {url}", "quick"),
+        ("cors", "Permissive CORS: reflects Origin / allows credentials", "curl -sSI -H 'Origin: https://evil.tld' {url}", "quick"),
+        ("admin-panels", "Exposed admin / management / default install pages", "nikto -h {url}", "slow"),
+        ("default-creds", "Default credentials on panels / consoles", None, "normal"),
+    ],
+    "A06": [  # Vulnerable & Outdated Components
+        ("versions", "Map component/framework/lib versions to known CVEs", "whatweb -a3 {url}", "quick"),
+        ("cms-scan", "Targeted CMS scanner (WordPress/Joomla/Drupal)", "wpscan --url {url} --enumerate vp,vt,u", "slow"),
+        ("js-libs", "Outdated client-side JS libraries", "retire --path .  # after saving the app's JS", "normal"),
+        ("nikto", "Baseline scan for known dangerous files / versions", "nikto -h {url}", "slow"),
+    ],
+    "A07": [  # Identification & Authentication Failures
+        ("user-enum", "Username enumeration via login/reset/register differences", None, "normal"),
+        ("brute-force", "Credential stuffing / brute force (mind lockouts!)", "hydra -L users.txt -P passwords.txt {host} http-post-form '/login:user=^USER^&pass=^PASS^:F=incorrect'", "slow"),
+        ("weak-policy", "Weak/default passwords, no lockout, no MFA", None, "normal"),
+        ("session-mgmt", "Session fixation, token entropy, logout invalidation", None, "normal"),
+        ("jwt-attacks", "JWT: alg=none, weak HMAC secret, kid/jku injection (jwt_tool)", None, "normal"),
+        ("reset-flow", "Broken reset: host-header poisoning, guessable/leaked token", None, "normal"),
+        ("mfa-bypass", "MFA bypass / OTP brute force / backup-code abuse", None, "normal", ["creds"]),
+    ],
+    "A08": [  # Software & Data Integrity Failures
+        ("deserialization", "Insecure deserialization (PHP/Java/.NET/pickle)", None, "normal"),
+        ("unsigned-updates", "Plugin/theme/update install without integrity checks", None, "normal"),
+        ("missing-sri", "External scripts loaded without sub-resource integrity", None, "quick"),
+        ("cicd-exposure", "Exposed CI/CD config, webhooks, build artifacts", None, "normal"),
+    ],
+    "A09": [  # Security Logging & Monitoring Failures
+        ("waf-detect", "Is there a WAF? Are probes detected / blocked / throttled?", "wafw00f {url}", "quick"),
+        ("verbose-leak", "Do error responses leak internal detail to the client?", None, "normal"),
+        ("log-injection", "Log/CRLF injection in fields that get logged or reflected", None, "normal"),
+    ],
+    "A10": [  # Server-Side Request Forgery
+        ("ssrf-params", "SSRF via url=/next=/dest=/img=/webhook= style params", None, "normal"),
+        ("cloud-metadata", "SSRF to cloud metadata (169.254.169.254 / metadata.google)", None, "normal"),
+        ("protocol-smuggle", "gopher:// file:// dict:// to reach internal services", None, "normal"),
+        ("blind-ssrf", "Blind SSRF via out-of-band (interactsh / Collaborator)", "interactsh-client", "normal"),
+    ],
+}
+
+
+def _owasp_order(cat):
+    """Sort key: recon first, then A01..A10 numerically, unknowns last."""
+    if cat == "RECON":
+        return -1
+    try:
+        return int(cat[1:])
+    except (ValueError, IndexError):
+        return 99
+
+
 # Baseline checks that apply to every target, regardless of services.
 GLOBAL_CHECKS = [
     ("full-tcp", "Full TCP port scan (all 65535) — don't trust the top-1000 only", "nmap -p- --min-rate 2000 {ip} -oA nmap/alltcp", "slow"),
@@ -331,7 +460,8 @@ def check_key(scope, name):
 def fresh(target):
     return {
         "meta": {"target": target, "created": now(), "os_hint": "", "tags": []},
-        "services": [], "checks": {}, "loot": [], "creds": [], "notes": [],
+        "services": [], "webapps": [], "checks": {},
+        "loot": [], "creds": [], "notes": [],
     }
 
 
@@ -347,6 +477,7 @@ def _migrate(data, target):
     data.pop("target", None)
     data.pop("created", None)
     data.setdefault("services", [])
+    data.setdefault("webapps", [])
     data.setdefault("checks", {})
     data.setdefault("loot", [])
     data.setdefault("creds", [])
@@ -434,11 +565,15 @@ def pick_creds(data, svc=None):
     return c.get("user", ""), c.get("pass", "")
 
 
-def render_cmd(cmd, ip, port="", user="", password=""):
+def render_cmd(cmd, ip, port="", user="", password="", url="", host=""):
     if not cmd:
         return None
-    return (cmd.replace("{ip}", ip)
-               .replace("{port}", str(port))
+    port_s = str(port)
+    fallback_url = url or (f"http://{ip}:{port_s}" if port_s else f"http://{ip}")
+    return (cmd.replace("{url}", fallback_url)
+               .replace("{host}", host or ip)
+               .replace("{ip}", ip)
+               .replace("{port}", port_s)
                .replace("{user}", user or "<user>")
                .replace("{pass}", password or "<pass>"))
 
@@ -544,8 +679,9 @@ def cmd_next(args):
     _ensure_globals(data)
     save(ip, data)
 
+    # web checks live in their own section — `enum web next` — so keep them out here.
     actionable = {k: v for k, v in data["checks"].items()
-                  if v["state"] in ("pending", "failed")}
+                  if v["state"] in ("pending", "failed") and not k.startswith("web/")}
 
     flt = (getattr(args, "service", None) or "").lower()
     if flt:
@@ -605,7 +741,8 @@ def _print_checks(ip, checks, header):
             name = k.split(":", 1)[1]
             mark = STATE_BADGE.get(v["state"], "☐")
             prio = "" if v.get("priority", "normal") == "normal" else f" ({v['priority']})"
-            rendered = render_cmd(v.get("cmd"), ip, v.get("port", ""))
+            rendered = render_cmd(v.get("cmd"), ip, v.get("port", ""),
+                                  url=v.get("url", ""), host=v.get("host", ""))
             print(f"  {mark} {name:16} {v['desc']}{prio}")
             if rendered:
                 print(f"      $ {rendered}")
@@ -626,7 +763,8 @@ def cmd_run(args):
         return
 
     user, password = pick_creds(data, chk.get("service"))
-    rendered = render_cmd(chk["cmd"], ip, chk.get("port", ""), user, password)
+    rendered = render_cmd(chk["cmd"], ip, chk.get("port", ""), user, password,
+                          url=chk.get("url", ""), host=chk.get("host", ""))
 
     # 1) confirm (unless -y)
     if args.yes or not sys.stdin.isatty():
@@ -1059,7 +1197,8 @@ def _render_check_block(data, key, chk, ip, collapse_all=False):
     lines = [f"#### {badge} {name} — {chk['desc']}  `[{chk['state']}]`"]
     if chk.get("skip_reason"):
         lines.append(f"> skipped: {chk['skip_reason']}")
-    rendered = render_cmd(chk.get("cmd"), ip, chk.get("port", ""))
+    rendered = render_cmd(chk.get("cmd"), ip, chk.get("port", ""),
+                          url=chk.get("url", ""), host=chk.get("host", ""))
     if rendered:
         lines.append(_fmt_cmd_block(rendered))
     run = _latest_run(chk)
@@ -1123,6 +1262,7 @@ def _render_full(data, exec_summary=False):
         lines += body
         lines.append("")
 
+    lines += _render_web_section(data, exec_summary=exec_summary)
     lines += _evidence_index(data)
     lines += _cred_table(data)
 
@@ -1141,6 +1281,51 @@ def _render_full(data, exec_summary=False):
             lines += [f"- [{n['t']}] {n['text']}" for n in loose]
             lines.append("")
     return "\n".join(lines)
+
+
+def _render_web_section(data, exec_summary=False):
+    """Per-app OWASP-grouped web checks for the report. Empty list if no apps."""
+    apps = data.get("webapps", [])
+    if not apps:
+        return []
+    ip = tgt(data)
+    out = ["## Web application testing (OWASP Top 10)", ""]
+    any_app = False
+    for w in apps:
+        scope = w["scope"]
+        blocks = {k: v for k, v in data["checks"].items() if k.startswith(scope + ":")}
+        groups = {}
+        for k, v in blocks.items():
+            groups.setdefault(v.get("owasp", "A00"), []).append((k, v))
+
+        body = []
+        for cat in sorted(groups, key=_owasp_order):
+            cat_lines = []
+            for key, chk in sorted(groups[cat]):
+                if exec_summary:
+                    produced = bool(_linked_loot(data, key))
+                    if chk["state"] == "skipped":
+                        continue
+                    if chk["state"] != "done" and not produced:
+                        continue
+                cat_lines += _render_check_block(data, key, chk, ip,
+                                                 collapse_all=exec_summary)
+                cat_lines.append("")
+            if cat_lines:
+                title = ("Recon / discovery" if cat == "RECON"
+                         else f"OWASP {cat}: {OWASP_TOP_TEN.get(cat, cat)}")
+                body.append(f"**{title}**")
+                body.append("")
+                body += cat_lines
+        if exec_summary and not body:
+            continue
+        any_app = True
+        note = f" — {w['note']}" if w.get("note") else ""
+        out.append(f"### {w['url']}{note}")
+        out.append("")
+        out += body
+        out.append("")
+    return out if any_app else []
 
 
 def _render_loot_only(data):
@@ -1216,11 +1401,204 @@ def cmd_playbook(args):
 
 
 # ---------------------------------------------------------------------------
+# WEB ENUM commands (own CLI section: `enum web ...`) — OWASP Top 10 driven.
+# Registration + the "what to check next" view live here; execution reuses the
+# shared verbs (run / done / skip / loot / cred / note / export).
+# ---------------------------------------------------------------------------
+def _add_web(data, url, vhost="", note="", only=None):
+    """Register a web app (dedup by scope) and load recon + OWASP checks.
+
+    Returns (is_new, loaded, scope, base_url). `only` is an iterable of OWASP
+    category codes (A01..A10) to restrict the checklist; recon always loads.
+    """
+    data.setdefault("webapps", [])
+    if "://" not in url:
+        url = "http://" + url
+    parsed = urlparse(url)
+    scheme = parsed.scheme or "http"
+    hostname = parsed.hostname or url
+    port = parsed.port or (443 if scheme == "https" else 80)
+    base = f"{scheme}://{hostname}" + (f":{parsed.port}" if parsed.port else "")
+    host = vhost or hostname
+    label = vhost or hostname
+    scope = f"web/{safe(label)}"
+
+    is_new = not any(w.get("scope") == scope for w in data["webapps"])
+    if is_new:
+        data["webapps"].append({
+            "url": base, "host": host, "scheme": scheme, "port": str(port),
+            "vhost": vhost, "scope": scope, "note": note, "added": now(),
+        })
+
+    only_set = {c.strip().upper() for c in only} if only else None
+    loaded = 0
+
+    def _load(entries, cat, prefix):
+        nonlocal loaded
+        for raw in entries:
+            n = _norm_entry(raw)
+            k = check_key(scope, f"{prefix}{n['name']}")
+            if k not in data["checks"]:
+                data["checks"][k] = {
+                    "desc": n["desc"], "cmd": n["cmd"], "state": "pending",
+                    "priority": n["priority"], "requires": n["requires"],
+                    "runs": [], "service": "web", "owasp": cat,
+                    "port": str(port), "url": base, "host": host,
+                }
+                loaded += 1
+
+    _load(WEB_RECON, "RECON", "recon-")
+    for cat in sorted(WEB_PLAYBOOK, key=_owasp_order):
+        if only_set and cat not in only_set:
+            continue
+        _load(WEB_PLAYBOOK[cat], cat, f"{cat.lower()}-")
+    return is_new, loaded, scope, base
+
+
+def _web_apps(data):
+    """{scope: webapp} for this notebook."""
+    return {w["scope"]: w for w in data.get("webapps", [])}
+
+
+def cmd_web_add(args):
+    data = load(args.target)
+    only = args.only.split(",") if args.only else None
+    if only:
+        bad = [c.strip().upper() for c in only if c.strip().upper() not in OWASP_TOP_TEN]
+        if bad:
+            print(f"[!] Unknown OWASP categor(y/ies): {', '.join(bad)}. "
+                  f"Valid: {', '.join(sorted(OWASP_TOP_TEN))}.")
+            return
+    is_new, loaded, _scope, base = _add_web(data, args.url, args.vhost or "",
+                                            args.note or "", only)
+    save(args.target, data)
+
+    vh = f" (vhost {args.vhost})" if args.vhost else ""
+    print(f"[+] {'Registered' if is_new else 'Re-synced'} web app {base}{vh}")
+    cats = ", ".join(c.strip().upper() for c in only) if only else "recon + all OWASP Top 10"
+    print(f"[+] {loaded} new check(s) loaded ({cats}).")
+    print(f"[+] Next:  enum web next {args.target}")
+
+
+def cmd_web_next(args):
+    """OWASP-grouped view of pending web checks (available vs credential-gated)."""
+    data = load(args.target)
+    ip = tgt(data)
+    apps = _web_apps(data)
+    if not apps:
+        print(f"[*] No web apps for {ip}. Register one first:")
+        print(f"    enum web add {ip} http://{ip}/")
+        return
+
+    cat_filter = (args.cat or "").upper()
+    pending = {k: v for k, v in data["checks"].items()
+               if k.startswith("web/") and v["state"] in ("pending", "failed")}
+    if args.quick:
+        pending = {k: v for k, v in pending.items() if v.get("priority") == "quick"}
+
+    shown = False
+    for scope, w in apps.items():
+        chks = {k: v for k, v in pending.items() if k.startswith(scope + ":")}
+        if cat_filter:
+            chks = {k: v for k, v in chks.items()
+                    if v.get("owasp", "").upper() == cat_filter}
+        if not chks:
+            continue
+        shown = True
+        note = f"  — {w['note']}" if w.get("note") else ""
+        print(f"\n=== WEB ENUM · OWASP Top 10 · {w['url']}{note} ===")
+
+        groups = {}
+        for k, v in chks.items():
+            groups.setdefault(v.get("owasp", "A00"), []).append((k, v))
+        for cat in sorted(groups, key=_owasp_order):
+            title = ("Recon / discovery" if cat == "RECON"
+                     else f"{cat}: {OWASP_TOP_TEN.get(cat, cat)}")
+            print(f"\n[{title}]")
+            for k, v in sorted(groups[cat]):
+                name = k.split(":", 1)[1]
+                ok, unmet = requires_met(data, v.get("requires", []))
+                badge = STATE_BADGE.get(v["state"], "☐") if ok else "⊘"
+                prio = ("" if v.get("priority", "normal") == "normal"
+                        else f" ({v['priority']})")
+                rendered = render_cmd(v.get("cmd"), ip, v.get("port", ""),
+                                      url=v.get("url", ""), host=v.get("host", ""))
+                print(f"  {badge} {name:22} {v['desc']}{prio}")
+                if rendered:
+                    print(f"      $ {rendered}")
+                elif ok:
+                    print(f"      (manual — then: enum done {ip} {name})")
+                if not ok:
+                    print(f"      needs: {', '.join(unmet)}")
+
+    if not shown:
+        scope_msg = f" in {cat_filter}" if cat_filter else ""
+        print(f"[*] No pending web checks{scope_msg} — the OWASP checklist is clear.")
+        return
+    print(f"\nRun it:  enum run {ip} <name>   |   Mark done:  enum done {ip} <name>")
+
+
+def cmd_web_list(args):
+    data = load(args.target)
+    ip = tgt(data)
+    apps = data.get("webapps", [])
+    if not apps:
+        print(f"[*] No web apps for {ip}. Add one:  enum web add {ip} <url>")
+        return
+    print(f"\n=== web apps for {ip} ===")
+    for w in apps:
+        scope = w["scope"]
+        chks = [v for k, v in data["checks"].items() if k.startswith(scope + ":")]
+        done = sum(1 for v in chks if v["state"] == "done")
+        vh = f"  (vhost {w['vhost']})" if w.get("vhost") else ""
+        note = f"  — {w['note']}" if w.get("note") else ""
+        print(f"  {w['url']:34} {done}/{len(chks)} checks{vh}{note}")
+
+
+def cmd_web_checklist(args):
+    """Print the OWASP Top 10 reference (no target needed)."""
+    print("OWASP Top 10 (2021) — web enumeration checklist\n")
+    print("[Recon / discovery]")
+    for e in WEB_RECON:
+        n = _norm_entry(e)
+        print(f"  · {n['name']:18} {n['desc']}")
+    for cat in sorted(WEB_PLAYBOOK, key=_owasp_order):
+        print(f"\n[{cat}: {OWASP_TOP_TEN[cat]}]")
+        for e in WEB_PLAYBOOK[cat]:
+            n = _norm_entry(e)
+            print(f"  · {n['name']:18} {n['desc']}")
+    print("\nLoad it against a target:  enum web add <target> <url>")
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+EPILOG = """\
+two workflows, one notebook:
+
+  SERVICE ENUM (open ports & services)
+    add / import        record open services, auto-load their playbooks
+    next                pending service checks (available vs blocked)
+
+  WEB ENUM (OWASP Top 10 · 2021)
+    web add             register a URL, load the OWASP Top-10 checklist
+    web next            pending web checks, grouped by OWASP category
+    web list            web apps registered for a target
+    web checklist       print the OWASP Top-10 reference (no target)
+
+  SHARED   run · done · skip · undone · loot · cred · note · status · export
+
+execution is human-in-the-loop: `run` dry-runs unless ENUM_LIVE=1 (or --live).
+"""
+
+
 def build_parser():
-    p = argparse.ArgumentParser(prog="enum",
-                                description="Target-centric enumeration lab notebook.")
+    p = argparse.ArgumentParser(
+        prog="enum",
+        description="Target-centric enumeration lab notebook (service + web/OWASP).",
+        epilog=EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = p.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("add", help="record an open service (auto-loads its checks)")
@@ -1306,6 +1684,30 @@ def build_parser():
     pb = sub.add_parser("playbook", help="edit/validate user playbook overrides")
     pb.add_argument("action", choices=["edit", "reload"])
     pb.set_defaults(func=cmd_playbook)
+
+    # --- WEB ENUM section: `enum web <verb>` (OWASP Top 10 driven) -----------
+    web = sub.add_parser("web", help="WEB ENUM — OWASP Top 10 checks for a web app (URL)")
+    web_sub = web.add_subparsers(dest="web_cmd", required=True)
+
+    wadd = web_sub.add_parser("add", help="register a URL and load the OWASP Top-10 checklist")
+    wadd.add_argument("target"); wadd.add_argument("url")
+    wadd.add_argument("--vhost", help="Host header / vhost to test (add to /etc/hosts first)")
+    wadd.add_argument("--only", help="comma list of OWASP cats, e.g. A01,A03,A05 (recon always loads)")
+    wadd.add_argument("--note", "-n")
+    wadd.set_defaults(func=cmd_web_add)
+
+    wnext = web_sub.add_parser("next", help="pending web checks grouped by OWASP category")
+    wnext.add_argument("target")
+    wnext.add_argument("--cat", help="only this OWASP category, e.g. A03")
+    wnext.add_argument("--quick", action="store_true", help="only quick checks")
+    wnext.set_defaults(func=cmd_web_next)
+
+    wlist = web_sub.add_parser("list", help="list registered web apps for a target")
+    wlist.add_argument("target")
+    wlist.set_defaults(func=cmd_web_list)
+
+    wchk = web_sub.add_parser("checklist", help="print the OWASP Top-10 reference (no target)")
+    wchk.set_defaults(func=cmd_web_checklist)
 
     return p
 
