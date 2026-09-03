@@ -249,6 +249,13 @@ WEB_RECON = [
     ("vhost-fuzz", "Virtual host / subdomain fuzzing (Host header)", "ffuf -u {url}/ -H 'Host: FUZZ.{host}' -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt -fs 0", "slow"),
     ("param-discovery", "Discover hidden GET/POST parameters", "ffuf -u '{url}/?FUZZ=1' -w /usr/share/seclists/Discovery/Web-Content/burp-parameter-names.txt -fs 0", "slow"),
     ("js-endpoints", "Review JS for endpoints / API keys / secrets", None, "normal"),
+    ("subdomain-enum", "Subdomain enumeration & brute — feed new hosts back in", "subfinder -d {host} -all -silent", "slow"),
+    ("subdomain-takeover", "Dangling CNAME / subdomain takeover", "nuclei -u {url} -t http/takeovers/", "normal"),
+    ("wayback", "Historical URLs & params (Wayback / CommonCrawl)", "waybackurls {host}", "normal"),
+    ("nuclei", "Template-based scan for known CVEs / exposures / misconfigs", "nuclei -u {url} -severity low,medium,high,critical", "slow"),
+    ("github-recon", "GitHub/GitLab dorking for leaked secrets, endpoints, creds", None, "normal"),
+    ("google-dork", "Search-engine dorking for exposed files, panels, params", None, "quick"),
+    ("broken-links", "Broken-link hijacking (claim dead external references)", None, "normal"),
 ]
 
 WEB_PLAYBOOK = {
@@ -259,12 +266,15 @@ WEB_PLAYBOOK = {
         ("path-traversal", "Directory traversal on file params (?file=../../etc/passwd)", None, "normal"),
         ("priv-esc", "Access-control matrix: low-priv user hitting high-priv funcs", None, "normal", ["creds"]),
         ("jwt-claims", "Tamper role/scope claims in JWT/cookies (client-side trust)", None, "normal", ["creds"]),
+        ("multi-user-idor", "Cross-account IDOR: user A reads/modifies user B's data (orders, statements, cart, address)", None, "normal", ["creds"]),
+        ("open-redirect", "Open redirect via url/next/redirect/dest params; bypass with //, \\, %00, whitelisted-host tricks", None, "normal"),
     ],
     "A02": [  # Cryptographic Failures
         ("weak-tls", "Weak TLS versions / ciphers / expired or wrong-CN cert", "testssl.sh {url}", "normal"),
         ("cleartext", "Sensitive data over HTTP; Secure/HttpOnly/SameSite cookie flags", "curl -sSI {url}", "quick"),
         ("secrets-exposed", "Secrets in URLs, JS, source, comments, or cached responses", None, "normal"),
         ("weak-tokens", "Predictable session IDs / reset tokens; JWT alg=none or weak key", None, "normal"),
+        ("cookie-analysis", "Decode/inspect session cookies (base64/hex); flip bits to find the auth-bearing part", None, "quick"),
     ],
     "A03": [  # Injection
         ("sqli", "SQL injection in params / forms / headers", "sqlmap -u '{url}/?id=1' --batch --level 2 --risk 2", "slow"),
@@ -274,12 +284,19 @@ WEB_PLAYBOOK = {
         ("nosqli", "NoSQL injection (login bypass, [$ne], [$gt])", None, "normal"),
         ("lfi-rfi", "Local/remote file inclusion, wrappers, log poisoning", None, "normal"),
         ("other-inj", "LDAP / XPath / header / CRLF / ORM injection where relevant", None, "normal"),
+        ("xxe", "XXE via XML input (Content-Type: text/xml, DOCTYPE ENTITY file:///etc/passwd + OOB)", None, "normal"),
+        ("host-header", "Host header injection: reset-password poisoning, cache poisoning, X-Forwarded-Host override", None, "normal"),
+        ("csv-injection", "CSV / formula injection in exported data (=, +, -, @ payloads)", None, "normal"),
     ],
     "A04": [  # Insecure Design
         ("business-logic", "Abuse logic: negative qty, price tampering, coupon reuse", None, "normal"),
         ("workflow-bypass", "Skip steps in multi-stage flows (checkout, register, 2FA)", None, "normal"),
         ("race-condition", "Race conditions on balance / limits / one-time tokens", None, "normal"),
         ("rate-limit", "Missing rate limiting on auth / OTP / costly endpoints", None, "normal"),
+        ("price-tampering", "Tamper price / quantity / amount / product-id to underpay or over-receive", None, "normal"),
+        ("coupon-abuse", "Voucher/coupon abuse: reuse, tamper value, parameter-pollution to stack", None, "normal"),
+        ("captcha-bypass", "CAPTCHA bypass: reuse, missing server-side check, remove field, verb/content-type change, OCR", None, "normal"),
+        ("dos-vectors", "App-layer DoS: cookie bomb, ReDoS, pixel/frame flood, CPDoS cache DoS, large-file upload", None, "normal"),
     ],
     "A05": [  # Security Misconfiguration
         ("exposed-files", "VCS/backup/config leaks (.git, .env, .bak, .DS_Store, ~)", "curl -s -o /dev/null -w '%{http_code} %{url_effective}\\n' {url}/.git/HEAD {url}/.env {url}/.DS_Store", "quick"),
@@ -289,12 +306,17 @@ WEB_PLAYBOOK = {
         ("cors", "Permissive CORS: reflects Origin / allows credentials", "curl -sSI -H 'Origin: https://evil.tld' {url}", "quick"),
         ("admin-panels", "Exposed admin / management / default install pages", "nikto -h {url}", "slow"),
         ("default-creds", "Default credentials on panels / consoles", None, "normal"),
+        ("forbidden-bypass", "403/401 bypass: X-Original-URL, ..;/, %2e, trailing /, case-swap, X-Forwarded-For/Host", None, "normal"),
+        ("cloud-buckets", "Misconfigured public cloud storage (S3 / GCS / Azure) tied to the app", None, "normal"),
+        ("graphql-introspection", "GraphQL introspection enabled / schema exposure", "curl -s {url}/graphql -H 'Content-Type: application/json' -d '{\"query\":\"{__schema{types{name}}}\"}'", "quick"),
     ],
     "A06": [  # Vulnerable & Outdated Components
         ("versions", "Map component/framework/lib versions to known CVEs", "whatweb -a3 {url}", "quick"),
         ("cms-scan", "Targeted CMS scanner (WordPress/Joomla/Drupal)", "wpscan --url {url} --enumerate vp,vt,u", "slow"),
         ("js-libs", "Outdated client-side JS libraries", "retire --path .  # after saving the app's JS", "normal"),
         ("nikto", "Baseline scan for known dangerous files / versions", "nikto -h {url}", "slow"),
+        ("wp-xmlrpc", "WordPress xmlrpc.php: system.listMethods, pingback SSRF, brute amplification", "curl -s {url}/xmlrpc.php -d '<?xml version=\"1.0\"?><methodCall><methodName>system.listMethods</methodName></methodCall>'", "quick"),
+        ("wp-user-enum", "WordPress user enumeration (?author=1, /wp-json/wp/v2/users)", "curl -s '{url}/wp-json/wp/v2/users'", "quick"),
     ],
     "A07": [  # Identification & Authentication Failures
         ("user-enum", "Username enumeration via login/reset/register differences", None, "normal"),
@@ -304,6 +326,11 @@ WEB_PLAYBOOK = {
         ("jwt-attacks", "JWT: alg=none, weak HMAC secret, kid/jku injection (jwt_tool)", None, "normal"),
         ("reset-flow", "Broken reset: host-header poisoning, guessable/leaked token", None, "normal"),
         ("mfa-bypass", "MFA bypass / OTP brute force / backup-code abuse", None, "normal", ["creds"]),
+        ("oauth-flaws", "OAuth: redirect_uri validation, missing/guessable state (CSRF), code reuse/predictability, client_secret checks", None, "normal"),
+        ("registration-flaws", "Weak registration: duplicate/overwrite user, disposable email, over HTTP, no email verification", None, "normal"),
+        ("2fa-flaws", "2FA flaws: code leaked in response, code reuse, no brute-force protection, response/status manipulation, null/000000", None, "normal"),
+        ("pass-confirm", "Sensitive changes (email/password/2FA) lack current-password re-confirmation", None, "quick"),
+        ("websocket-sec", "WebSocket security: token/secret-header auth, message tampering, ws:// MITM downgrade", None, "normal"),
     ],
     "A08": [  # Software & Data Integrity Failures
         ("deserialization", "Insecure deserialization (PHP/Java/.NET/pickle)", None, "normal"),
@@ -321,6 +348,7 @@ WEB_PLAYBOOK = {
         ("cloud-metadata", "SSRF to cloud metadata (169.254.169.254 / metadata.google)", None, "normal"),
         ("protocol-smuggle", "gopher:// file:// dict:// to reach internal services", None, "normal"),
         ("blind-ssrf", "Blind SSRF via out-of-band (interactsh / Collaborator)", "interactsh-client", "normal"),
+        ("ssrf-filter-bypass", "Bypass SSRF filters: [::], decimal/octal/hex IP, IPv6 embed, domain-redirect, enclosed alphanumerics", None, "normal"),
     ],
 }
 

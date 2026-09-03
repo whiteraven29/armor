@@ -77,9 +77,11 @@ Fuzzy matching works on check names, so `done null-session` resolves to
 
 ## Web workflow (OWASP Top 10)
 
-Found a web app? Register the URL and get the OWASP Top 10 (2021) as a checklist.
-Web checks live under their own `enum web` verbs, but execute and report through
-the same shared machinery.
+Found a web app? Register the URL and get a recon baseline plus the full **OWASP
+Top 10 (2021)** as 80+ concrete, per-app checks. The playbook draws on OWASP and
+a real-world bug-bounty methodology (200+ test cases) distilled into runnable and
+manual checks. Web checks live under their own `enum web` verbs, but execute and
+report through the same shared machinery.
 
 ```bash
 # 1. Register a URL — loads a recon baseline + all OWASP categories (A01–A10).
@@ -107,7 +109,8 @@ Each app is scoped by host, so multiple vhosts/ports on one target coexist. Many
 web checks are **manual** (IDOR, SSTI, business-logic, SSRF, JWT, deserialization)
 — do the check, then `enum done`; the runnable ones ship templates for `whatweb`,
 `ffuf`, `feroxbuster`, `sqlmap`, `nikto`, `wpscan`, `testssl.sh`, `wafw00f`,
-`hydra`, and CORS / exposed-file `curl` probes.
+`hydra`, `subfinder`, `waybackurls`, `nuclei`, and CORS / GraphQL / xmlrpc /
+exposed-file `curl` probes.
 
 `{url}` (→ `scheme://host[:port]`) and `{host}` are substituted alongside the
 usual `{ip}` / `{port}` / `{user}` / `{pass}` when a web command is rendered.
@@ -129,6 +132,35 @@ The OWASP categories, each with concrete enumeration checks:
 | **A03** | Injection | **A08** | Software & Data Integrity Failures |
 | **A04** | Insecure Design | **A09** | Security Logging & Monitoring Failures |
 | **A05** | Security Misconfiguration | **A10** | Server-Side Request Forgery (SSRF) |
+
+**Recon baseline** maps the app before you hunt bugs: fingerprint, headers, TLS,
+robots/sitemap, content & parameter discovery, vhost fuzzing, JS endpoints — plus
+subdomain enum/takeover, Wayback history, `nuclei` templates, and GitHub and
+search-engine dorking.
+
+**Coverage highlights** (checks added most recently are **bold**):
+
+- **A01** — IDOR, **cross-account (A↔B) IDOR**, forced browsing, verb tampering,
+  path traversal, JWT-claim tampering, **open redirect**.
+- **A02** — weak TLS, cleartext data, exposed secrets, weak tokens,
+  **session-cookie decode/entropy analysis**.
+- **A03** — SQLi, XSS, command / SSTI / NoSQL / LFI-RFI injection, **XXE**,
+  **Host-header injection**, **CSV/formula injection**.
+- **A04** — business-logic & workflow abuse, race conditions, rate-limit,
+  **price/quantity tampering**, **coupon/voucher abuse**, **CAPTCHA bypass**,
+  **DoS vectors** (cookie bomb, ReDoS, CPDoS).
+- **A05** — exposed files, dir listing, verbose errors, missing headers, CORS,
+  admin panels, default creds, **403/401 bypass**, **cloud buckets**,
+  **GraphQL introspection**.
+- **A06** — version→CVE mapping, CMS scan, JS libs, Nikto, **WordPress xmlrpc /
+  user enumeration**.
+- **A07** — user enum, brute force, weak policy, session mgmt, JWT attacks,
+  reset flow, MFA bypass, **OAuth flaws**, **registration flaws**, **2FA flaws**,
+  **password-confirmation gaps**, **WebSocket auth**.
+- **A08** — insecure deserialization, unsigned updates, missing SRI, CI/CD leaks.
+- **A09** — WAF detection, verbose-error leakage, log/CRLF injection.
+- **A10** — SSRF params, cloud metadata, protocol smuggling, blind SSRF,
+  **SSRF filter bypass**.
 
 ## The execution engine (`enum run`)
 
