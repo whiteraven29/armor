@@ -27,3 +27,6 @@ targets.txt
 *.local
 .env
 target1.md
+
+# Local practice lab — never tracked by this repo
+/lab/
